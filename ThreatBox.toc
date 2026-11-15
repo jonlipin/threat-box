@@ -1,0 +1,16 @@
+## Interface: 16001
+## Title: Threat Box
+## Notes: Your threat on each enemy as a percentage, in a box that matches the nameplate's level box. Pin it below, above or beside the level box, or left of the health bar.
+## Author: jonlipin
+## Version: 0.1.0
+## OptionalDeps: EllesmereUI
+## SavedVariables: ThreatBoxDB
+## IconTexture: Interface\Icons\Ability_Physical_Taunt
+## X-Category: Combat
+## X-Website: https://github.com/jonlipin/threat-box
+## X-License: MIT
+
+ThreatBox.lua
+Options.lua
+Styles.lua
+ThreatBox_Skins.lua
