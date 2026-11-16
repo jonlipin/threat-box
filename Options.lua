@@ -566,11 +566,14 @@ local function BuildContent(page)
         end
         y = y - 44
         Toggle("percentSign", "Show the % sign")
+        Toggle("lead")
         Toggle("fill")
         y = y - 8
 
-        Head("Border")
-        Toggle("colorBorder", "Color the border by threat")
+        Head("Threat colors")
+        Toggle("colorBorder")
+        Toggle("colorText")
+        Toggle("colorBg")
         y = y - 2
         ui.colors = Cycle(col, "Colors", x, y, ns.COLOR_ORDER, ns.COLOR_LABELS,
             function() return db.colors end,
@@ -624,8 +627,64 @@ local function BuildContent(page)
         y = math.min(y, leftBottom)
     end
 
-    local TABS = { "threat", "pet", "who" }
-    local TAB_TEXT = { threat = "Threat box", pet = "Pet box", who = "Target box" }
+    -- The boxes on the game's target frame and focus frame.
+    local function FrameControls()
+        local F = ns.FRAME_KEYS
+        local wide = ns.FRAME_OFFSET_LIMIT
+        x, y = 0, 0
+        Head("Target and focus frames")
+        Toggle("targetFrame")
+        Toggle("focusFrame")
+        Text("The same threat box above the portrait on the game's own target frame and focus frame. Its settings here are its own.", 0, 58)
+        Head("Place")
+        ui.frameX = Slider(col, "Left / right", x, y, -wide, wide, 1,
+            function() return db.frameX end,
+            function(v) db.frameX = v ns.Apply() end)
+        y = y - 46
+        ui.frameY = Slider(col, "Up / down", x, y, -wide, wide, 1,
+            function() return db.frameY end,
+            function(v) db.frameY = v ns.Apply() end)
+        y = y - 46
+        ui.frameScale = Slider(col, "Size (%)", x, y, ns.SCALE_MIN * 100, ns.SCALE_MAX * 100, 5,
+            function() return math.floor(db.frameScale * 100 + 0.5) end,
+            function(v) db.frameScale = v / 100 ns.Apply() end)
+        y = y - 50
+
+        Head("Warnings")
+        Toggle(F.warn, ns.TOGGLE_LABELS.warn)
+        y = y - 4
+        ui[F.warnAt] = Slider(col, "Pulse from (%)", x, y, 50, 100, 5,
+            function() return db[F.warnAt] end,
+            function(v) db[F.warnAt] = v ns.Apply() end)
+        y = y - 46
+        local leftBottom = y
+
+        x, y = RIGHT, 0
+        Head("Number")
+        ui[F.number] = Cycle(col, "Shows", x, y, ns.NUMBER_ORDER, ns.NUMBER_LABELS,
+            function() return db[F.number] end,
+            function(v) db[F.number] = v ns.Apply() end)
+        y = y - 34
+        Toggle(F.percentSign, "Show the % sign")
+        Toggle(F.lead, ns.TOGGLE_LABELS.lead)
+        Toggle(F.fill, ns.TOGGLE_LABELS.fill)
+        y = y - 8
+
+        Head("Threat colors")
+        Toggle(F.colorBorder, ns.TOGGLE_LABELS.colorBorder)
+        Toggle(F.colorText, ns.TOGGLE_LABELS.colorText)
+        Toggle(F.colorBg, ns.TOGGLE_LABELS.colorBg)
+        y = y - 2
+        ui[F.colors] = Cycle(col, "Colors", x, y, ns.COLOR_ORDER, ns.COLOR_LABELS,
+            function() return db[F.colors] end,
+            function(v) db[F.colors] = v ns.Apply() end)
+        y = y - 34
+        Text("These boxes are not in the preview above. Target an enemy and tick the sample below to see them while you set them.", 0, 44)
+        y = math.min(y, leftBottom)
+    end
+
+    local TABS = { "threat", "pet", "who", "frames" }
+    local TAB_TEXT = { threat = "Threat box", pet = "Pet box", who = "Target box", frames = "Unit frames" }
     local editing = "threat"
     local tabs, blocks = {}, {}
     O.tabs, O.blocks = tabs, blocks
@@ -700,6 +759,8 @@ local function BuildContent(page)
         col = block
         if which == "threat" then
             ThreatControls()
+        elseif which == "frames" then
+            FrameControls()
         elseif which == "pet" then
             PieceControls("pet", "A second box, with a blue number, showing your pet's threat on that enemy. It takes the threat box's colors and size.")
         else

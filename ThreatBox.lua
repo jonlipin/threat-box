@@ -20,7 +20,7 @@ local ADDON, ns = ...
 
 local TITLE = "Threat Box"
 ns.TITLE = TITLE
-ns.VERSION = "0.1.0"
+ns.VERSION = "0.1.1"
 
 local DEFAULTS = {
     position = "below",   -- below | above | right (of the level box) | left (of the health bar)
@@ -28,11 +28,14 @@ local DEFAULTS = {
     offsetY = 0,
     scale = 1,
     colorBorder = true,
-    number = "pull",      -- pull: 100% = you take the enemy (melee and ranged alike) | raw
+    colorText = false,    -- the number takes the threat color
+    colorBg = false,      -- the box's background takes the threat color
+    number = "pull",     -- pull: 100% = you take the enemy (melee and ranged alike) | raw
     colors = "normal",    -- normal | tank (reversed while your role is tank) | reversed
     style = "auto",       -- window style: auto | blizzard | dark (see Styles.lua)
     darkAlpha = 0.92,
     percentSign = true,
+    lead = true,          -- while the enemy is on you: your lead over the next player, above 100%
     fill = true,          -- the box fills left to right as threat rises
     warn = true,          -- the box pulses from warnAt percent (for tanks: on an enemy they have lost)
     warnAt = 80,
@@ -52,6 +55,22 @@ local DEFAULTS = {
     whoY = 0,
     whoWidth = 60,        -- the name plaque's width
     whoScale = 1,
+    targetFrame = false,  -- a threat box on the game's target frame
+    focusFrame = false,   -- and on its focus frame
+    frameScale = 1.2,     -- their size, and a nudge from where the game puts its own threat number
+    frameX = 80,          -- over the portrait
+    frameY = 0,
+    -- The boxes on those frames have their own copy of the threat box's settings.
+    frameColorBorder = true,
+    frameColorText = false,
+    frameColorBg = false,
+    frameNumber = "pull",
+    frameColors = "normal",
+    framePercentSign = true,
+    frameFill = true,
+    frameLead = true,
+    frameWarn = true,
+    frameWarnAt = 80,
     groupOnly = false,    -- show rules
     combatOnly = false,
     targetOnly = false,
@@ -68,14 +87,22 @@ ns.POSITION_LABELS = {
 }
 
 -- Slash words for the on/off settings, and what each is called.
-ns.TOGGLES = { fill = "fill", pulse = "warn", sound = "sound", who = "who", pet = "pet",
+ns.TOGGLES = { fill = "fill", lead = "lead", pulse = "warn", sound = "sound", who = "who", pet = "pet",
+    border = "colorBorder", text = "colorText", background = "colorBg",
+    targetframe = "targetFrame", focusframe = "focusFrame",
     group = "groupOnly", combat = "combatOnly", targetonly = "targetOnly", trivial = "skipTrivial" }
 ns.TOGGLE_LABELS = {
     fill = "Fill the box as threat rises",
+    lead = "Show your lead above 100%",
     warn = "Pulse near the pull point",
     sound = "Sound when an enemy changes hands",
     who = "Show the target box",
     pet = "Show the pet box",
+    targetFrame = "Show on the target frame",
+    focusFrame = "Show on the focus frame",
+    colorBorder = "Color the border by threat",
+    colorText = "Color the number by threat",
+    colorBg = "Color the background by threat",
     groupOnly = "Only in a group",
     combatOnly = "Only in combat",
     targetOnly = "Only on your target and focus",
@@ -103,6 +130,7 @@ local WHO_WIDTH = 60
 local PULSE_COLOR = { 1, 0.25, 0.1 }
 local PET_TEXT = { 0.6, 0.9, 1 }
 local FLAT = "Interface\\Buttons\\WHITE8X8"
+local TINT_SHADE = 0.6   -- the background takes a darker shade of the threat color, so the number reads
 ns.WHO_WIDTH = WHO_WIDTH
 
 -- The game's threat colors, by threat state (the values GetThreatStatusColor returns).
@@ -122,7 +150,8 @@ local TANK_COLORS = {
 local PREVIEW_VALUE, PREVIEW_STATUS = 87, 2
 local PREVIEW_PET, PREVIEW_PET_STATUS, PREVIEW_WHO = 34, 1, "Tharandir"
 ns.PREVIEW_VALUE, ns.PREVIEW_STATUS = PREVIEW_VALUE, PREVIEW_STATUS
-ns.OFFSET_LIMIT = 60
+ns.OFFSET_LIMIT = 150        -- nudges on nameplates
+ns.FRAME_OFFSET_LIMIT = 300  -- and on the target and focus frames, which are far bigger
 ns.SCALE_MIN, ns.SCALE_MAX = 0.5, 2
 
 local db
@@ -161,8 +190,20 @@ local function IsTank()
 end
 ns.IsTank = IsTank
 
-local function Reversed()
-    return db.colors == "reversed" or (db.colors == "tank" and IsTank())
+-- A box on the target or focus frame reads its own copy of these settings.
+local FRAME_KEYS = { colorBorder = "frameColorBorder", colorText = "frameColorText", colorBg = "frameColorBg",
+    number = "frameNumber", colors = "frameColors", percentSign = "framePercentSign", fill = "frameFill", lead = "frameLead",
+    warn = "frameWarn", warnAt = "frameWarnAt" }
+ns.FRAME_KEYS = FRAME_KEYS
+local function Opt(box, key)
+    if box and box.onFrame then return db[FRAME_KEYS[key]] end
+    return db[key]
+end
+
+-- box nil asks for the nameplate boxes.
+local function Reversed(box)
+    local colors = Opt(box, "colors")
+    return colors == "reversed" or (colors == "tank" and IsTank())
 end
 ns.Reversed = Reversed
 
@@ -174,9 +215,21 @@ ns.Reversed = Reversed
 --   +1 the warning pulse
 --   +2..4 the outline's three color steps
 --   +5 the flat panel (Dark and EllesmereUI looks only)
---   +6 the fill meter
---   +7 the face: the number
-local LEVELS = { pulse = 1, steps = 1, panel = 5, fill = 6, face = 7 }
+--   +6..8 the background's three color steps
+--   +9 the fill meter
+--   +10 the face: the number
+--   +11..13 the number again, once in each higher threat color
+local LEVELS = { pulse = 1, steps = 1, panel = 5, tint = 5, fill = 9, face = 10, ink = 10 }
+
+local function NewNumber(parent, box)
+    local ok, text = pcall(parent.CreateFontString, parent, nil, "OVERLAY", "SystemFont_NamePlateLevel")
+    if not ok or not text then
+        text = parent:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    end
+    text:SetPoint("CENTER", box, "CENTER", 0, 0)
+    if text.SetWordWrap then text:SetWordWrap(false) end
+    return text
+end
 
 -- kept = false makes a box that is not tracked as a nameplate's (the options preview's, and
 -- the pet's box, which hangs off its nameplate's box).
@@ -252,16 +305,52 @@ local function MakeBox(parent, kept)
     meter:Hide()
     box.fill = meter
 
+    -- The background in the threat color: as with the border, one status bar per higher threat
+    -- state, each a solid darker shade of its color, the lowest state's shade underneath. The
+    -- topmost full bar is the color shown.
+    box.tints = {}
+    for state = 1, 3 do
+        local bar = CreateFrame("StatusBar", nil, box)
+        bar:SetPoint("TOPLEFT", box, "TOPLEFT", 2, -2)
+        bar:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", -2, 2)
+        bar:SetStatusBarTexture(FLAT)
+        bar:SetMinMaxValues(state - 1, state)
+        bar:SetValue(state - 1)
+        bar:Hide()
+        box.tints[state] = bar
+    end
+    box.tintBase = box.tints[1]:CreateTexture(nil, "BACKGROUND")
+    box.tintBase:SetAllPoints(box.tints[1])
+
     local face = CreateFrame("Frame", nil, box)
     face:SetAllPoints(box)
     box.face = face
-    local ok, text = pcall(face.CreateFontString, face, nil, "OVERLAY", "SystemFont_NamePlateLevel")
-    if not ok or not text then
-        text = face:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    box.text = NewNumber(face, box)
+
+    -- The number in the threat color. A font string cannot be a status bar's fill, so each higher
+    -- threat state gets a copy of the number in its color inside a frame that clips what it holds
+    -- and ends at the right edge of an unseen status bar's fill. The bar is full once the state
+    -- has reached it, which uncovers that copy over the ones below; empty, the frame is a sliver
+    -- to the left of the box and the copy is cut away. The game does the comparison again.
+    box.inks = {}
+    for state = 1, 3 do
+        local bar = CreateFrame("StatusBar", nil, box)
+        bar:SetPoint("TOPLEFT", box, "TOPLEFT", -4, 4)
+        bar:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 4, -4)
+        local fill = bar:CreateTexture(nil, "ARTWORK")
+        fill:SetColorTexture(1, 1, 1, 0)
+        bar:SetStatusBarTexture(fill)
+        bar:SetMinMaxValues(state - 1, state)
+        bar:SetValue(state - 1)
+        local clip = CreateFrame("Frame", nil, bar)
+        clip:SetPoint("TOPLEFT", bar, "TOPLEFT", -1, 0)
+        clip:SetPoint("BOTTOMRIGHT", fill, "BOTTOMRIGHT", 0, 0)
+        if clip.SetClipsChildren then clip:SetClipsChildren(true) end
+        bar.clip = clip
+        bar.text = NewNumber(clip, box)
+        bar:Hide()
+        box.inks[state] = bar
     end
-    text:SetPoint("CENTER", box, "CENTER", 0, 0)
-    if text.SetWordWrap then text:SetWordWrap(false) end
-    box.text = text
 
     box.plate = parent
     if kept ~= false then boxes[parent] = box end
@@ -277,9 +366,20 @@ local function SetLevels(box, frameLevel)
     box.gate:SetFrameLevel(frameLevel + LEVELS.pulse)
     for state, step in ipairs(box.steps) do step:SetFrameLevel(frameLevel + LEVELS.steps + state) end
     if box.panel then box.panel:SetFrameLevel(frameLevel + LEVELS.panel) end
+    for state, tint in ipairs(box.tints) do tint:SetFrameLevel(frameLevel + LEVELS.tint + state) end
     box.fill:SetFrameLevel(frameLevel + LEVELS.fill)
     box.face:SetFrameLevel(frameLevel + LEVELS.face)
+    for state, ink in ipairs(box.inks) do
+        ink:SetFrameLevel(frameLevel + LEVELS.ink + state)
+        ink.clip:SetFrameLevel(frameLevel + LEVELS.ink + state)
+    end
     box.frameLevel = frameLevel
+end
+
+-- The number's font height, on the number and on its colored copies.
+local function NumberHeight(box, height)
+    box.text:SetTextHeight(height)
+    for _, ink in ipairs(box.inks) do ink.text:SetTextHeight(height) end
 end
 ns.SetLevels = SetLevels
 ns.LEVELS = LEVELS
@@ -471,7 +571,7 @@ local function Place(box, level, bar, rel)
         frameLevel = bar:GetFrameLevel() + 5
     end
     SetLevels(box, frameLevel)
-    if fontHeight > 0 then box.text:SetTextHeight(fontHeight) end
+    if fontHeight > 0 then NumberHeight(box, fontHeight) end
     box.fontHeight = fontHeight
     box.chainKey = nil -- the pet's box and the name plaque are laid out again
 
@@ -502,7 +602,7 @@ end
 -- isTanking. The percentage is the game's scaled one (100% = you take the enemy, from melee or
 -- from range) or the raw one, as chosen. In the secret case nothing may be compared, so the lead
 -- while the enemy is on you is not used and a box cannot be hidden for reading 0%.
-local function ReadThreat(unit, who)
+local function ReadThreat(unit, who, box)
     who = who or "player"
     if not UnitDetailedThreatSituation then return "hide" end
     local canAttack = UnitCanAttack("player", unit)
@@ -513,7 +613,7 @@ local function ReadThreat(unit, who)
     local ok, isTanking, status, scaled, raw = pcall(UnitDetailedThreatSituation, who, unit)
     if not ok then return "hide" end
     local percent = raw
-    if db.number == "pull" then percent = scaled end
+    if Opt(box, "number") == "pull" then percent = scaled end
 
     if IsSecret(isTanking) or IsSecret(status) or IsSecret(percent) then
         report.secretReads = report.secretReads + 1
@@ -522,12 +622,12 @@ local function ReadThreat(unit, who)
     if status == nil then return "hide" end -- not on this enemy's threat list
 
     local display = percent
-    if isTanking then
+    if isTanking and Opt(box, "lead") then
         local okLead, lead = pcall(UnitThreatPercentageOfLead, who, unit)
         if okLead and lead and not IsSecret(lead) and lead ~= 0 then
             display = lead
         end
-    elseif who == "player" and not Reversed() and IsTank() then
+    elseif not isTanking and who == "player" and not Reversed(box) and IsTank() then
         -- As the game does with its own colors: a tank who has lost the enemy sees orange.
         status = 2
     end
@@ -538,12 +638,12 @@ ns.ReadThreat = ReadThreat
 
 -- Shows the border in the color of a threat state, which may be secret.
 local function ShowBorder(box, status)
-    if not db.colorBorder then
+    if not Opt(box, "colorBorder") then
         box.border:Hide()
         for _, bar in ipairs(box.steps) do bar:Hide() end
         return
     end
-    local colors = Reversed() and TANK_COLORS or STATUS_COLORS
+    local colors = Reversed(box) and TANK_COLORS or STATUS_COLORS
     if box.colors ~= colors then
         box.colors = colors
         box.border:SetVertexColor(colors[0][1], colors[0][2], colors[0][3])
@@ -557,10 +657,65 @@ local function ShowBorder(box, status)
     end
 end
 
+-- The background in a darker shade of the threat state's color. The state may be secret.
+local function ShowTint(box, status)
+    if not Opt(box, "colorBg") then
+        for _, bar in ipairs(box.tints) do bar:Hide() end
+        return
+    end
+    local colors = Reversed(box) and TANK_COLORS or STATUS_COLORS
+    if box.tintColors ~= colors then
+        box.tintColors = colors
+        local base = colors[0]
+        box.tintBase:SetColorTexture(base[1] * TINT_SHADE, base[2] * TINT_SHADE, base[3] * TINT_SHADE, 1)
+        for state, bar in ipairs(box.tints) do
+            local c = colors[state]
+            bar:SetStatusBarColor(c[1] * TINT_SHADE, c[2] * TINT_SHADE, c[3] * TINT_SHADE, 1)
+        end
+    end
+    for _, bar in ipairs(box.tints) do
+        if pcall(bar.SetValue, bar, status) then bar:Show() else bar:Hide() end
+    end
+end
+
+-- The number in the threat state's color: the number itself takes the lowest state's color and
+-- each copy above it is written the same text and uncovered by the game when the state reaches
+-- it. The pet's number keeps its own blue, which is what tells the two boxes apart.
+local function ShowInk(box, status, fmt, value)
+    if not Opt(box, "colorText") or box.isPet then
+        if box.inkColors then
+            box.inkColors = nil
+            local plain = box.plainColor
+            box.text:SetTextColor(plain and plain[1] or 1, plain and plain[2] or 1, plain and plain[3] or 1)
+        end
+        for _, bar in ipairs(box.inks) do bar:Hide() end
+        return
+    end
+    local colors = Reversed(box) and TANK_COLORS or STATUS_COLORS
+    if box.inkColors ~= colors then
+        if not box.inkColors and not box.plainColor and box.text.GetTextColor then
+            local r, g, b = box.text:GetTextColor()
+            if type(r) == "number" then box.plainColor = { r, g, b } end
+        end
+        box.inkColors = colors
+        box.text:SetTextColor(colors[0][1], colors[0][2], colors[0][3])
+        for state, bar in ipairs(box.inks) do
+            bar.text:SetTextColor(colors[state][1], colors[state][2], colors[state][3])
+        end
+    end
+    for _, bar in ipairs(box.inks) do
+        if pcall(bar.text.SetFormattedText, bar.text, fmt, value) and pcall(bar.SetValue, bar, status) then
+            bar:Show()
+        else
+            bar:Hide()
+        end
+    end
+end
+
 -- The fill meter: empty at 0, full at the pull point (100% scaled, 130% raw from range).
 local function ShowFill(box, value)
-    if not db.fill then box.fill:Hide() return end
-    box.fill:SetMinMaxValues(0, db.number == "raw" and 130 or 100)
+    if not Opt(box, "fill") then box.fill:Hide() return end
+    box.fill:SetMinMaxValues(0, Opt(box, "number") == "raw" and 130 or 100)
     if pcall(box.fill.SetValue, box.fill, value) then box.fill:Show() else box.fill:Hide() end
 end
 
@@ -569,13 +724,13 @@ end
 -- both comparisons: the gate's range does the percentage, the holder's alpha does "on you".
 -- isTanking nil (the options preview) counts as not on you.
 local function ShowPulse(box, value, isTanking)
-    if not db.warn or box.isPet then box.pulse:Hide() return end
+    if not Opt(box, "warn") or box.isPet then box.pulse:Hide() return end
     local gate = box.gate
-    if Reversed() then
+    if Reversed(box) then
         gate:SetMinMaxValues(0, 1)
         gate:SetValue(1)
     else
-        gate:SetMinMaxValues(db.warnAt - 0.5, db.warnAt)
+        gate:SetMinMaxValues(Opt(box, "warnAt") - 0.5, Opt(box, "warnAt"))
         if not pcall(gate.SetValue, gate, value) then box.pulse:Hide() return end
     end
     local holder = box.pulse
@@ -591,11 +746,13 @@ end
 -- One path for plain and secret values: the game formats the number, fills the border and the
 -- meter, and decides the pulse.
 function ns.ShowValue(box, value, status, isTanking)
-    local fmt = db.percentSign and "%1.0f%%" or "%1.0f"
+    local fmt = Opt(box, "percentSign") and "%1.0f%%" or "%1.0f"
     if not pcall(box.text.SetFormattedText, box.text, fmt, value) then
         box.text:SetText("?")
     end
     ShowBorder(box, status)
+    ShowTint(box, status)
+    ShowInk(box, status, fmt, value)
     ShowFill(box, value)
     ShowPulse(box, value, isTanking)
     box:Show()
@@ -712,7 +869,7 @@ local function LayoutChain(box, petShown, whoShown)
         local pet = box.pet
         pet:SetSize(w, h)
         SetLevels(pet, level)
-        if box.fontHeight and box.fontHeight > 0 then pet.text:SetTextHeight(box.fontHeight) end
+        if box.fontHeight and box.fontHeight > 0 then NumberHeight(pet, box.fontHeight) end
         Hang(pet, "pet")
     end
     if whoShown and box.who then
@@ -760,7 +917,7 @@ end
 local function Allowed(box, unit)
     if db.groupOnly and not (IsInGroup and IsInGroup()) then return false end
     if db.combatOnly and not inCombat then return false end
-    if db.targetOnly and not (IsPlateOf(box.plate, "target") or IsPlateOf(box.plate, "focus")) then return false end
+    if db.targetOnly and box and not (IsPlateOf(box.plate, "target") or IsPlateOf(box.plate, "focus")) then return false end
     if db.skipTrivial and UnitIsTrivial then
         local trivial = UnitIsTrivial(unit)
         if not IsSecret(trivial) and trivial then return false end
@@ -814,7 +971,12 @@ local function Update(unit)
     local allowed = Allowed(box, unit)
     local mode, value, status, isTanking = "hide"
     if allowed then
-        mode, value, status, isTanking = ReadThreat(unit)
+        -- The game answers more fully for "target" and "focus" than for a nameplate's own unit
+        -- (seen in game: the lead above 100% came through for the target frame only), so the
+        -- nameplate of your target or focus is read by that name, and by its own otherwise.
+        local alias = (IsPlateOf(box.plate, "target") and "target") or (IsPlateOf(box.plate, "focus") and "focus") or nil
+        if alias then mode, value, status, isTanking = ReadThreat(alias) end
+        if mode == "hide" then mode, value, status, isTanking = ReadThreat(unit) end
         NoteTanking(box, mode, isTanking)
     end
     local petShown = allowed and ShowPet(box, unit) or false
@@ -832,14 +994,90 @@ local function Update(unit)
     LayoutChain(box, petShown, ShowWho(box, unit))
 end
 
+------------------------------------------------------------------------
+-- The target frame and the focus frame
+------------------------------------------------------------------------
+-- The same box, as a child of the game's target or focus frame, so it shows, hides, moves and
+-- scales with that frame. It sits where the game puts its own numeric threat: centered above
+-- the name strip. Nothing is written on the game's frame; the box is only anchored to it.
+local FRAME_UNITS = {
+    target = { frame = "TargetFrame", key = "targetFrame" },
+    focus = { frame = "FocusFrame", key = "focusFrame" },
+}
+local FRAME_ORDER = { "target", "focus" }
+local FRAME_GAP = 4       -- room for the box's outline above the name strip
+local FRAME_LEVELS = 10   -- above the frame's own layers
+local frameBoxes = {}     -- "target" / "focus" -> its box
+ns.frameBoxes = frameBoxes
+
+local function NameStrip(host)
+    local content = host.TargetFrameContent
+    local main = type(content) == "table" and content.TargetFrameContentMain
+    local strip = type(main) == "table" and main.ReputationColor
+    if type(strip) == "table" and strip.GetObjectType then return strip end
+    return nil
+end
+
+local function PlaceOnFrame(box, host)
+    local width = 28 + (db.framePercentSign and SIGN_ROOM or 0)
+    local key = table.concat({ width, db.frameScale, db.frameX, db.frameY }, "|")
+    if box.layoutKey == key then return true end
+    box:SetScale(db.frameScale)
+    box:SetSize(width, 18)
+    SetLevels(box, (host:GetFrameLevel() or 1) + FRAME_LEVELS)
+    NumberHeight(box, 10)
+    box:ClearAllPoints()
+    local strip = NameStrip(host)
+    local ok = strip and pcall(box.SetPoint, box, "BOTTOM", strip, "TOP", db.frameX, db.frameY + FRAME_GAP)
+    if not ok then
+        -- No name strip to be found (another addon's frame, or a change in the game's): the
+        -- top of the frame itself.
+        box:ClearAllPoints()
+        local err
+        ok, err = pcall(box.SetPoint, box, "BOTTOM", host, "TOP", db.frameX, db.frameY - 20)
+        if not ok then report.anchorError = tostring(err) return false end
+    end
+    box.layoutKey = key
+    return true
+end
+
+local function UpdateFrameBox(unit)
+    local set = FRAME_UNITS[unit]
+    local box = frameBoxes[unit]
+    if not db[set.key] then
+        if box then box:Hide() end
+        return
+    end
+    local host = _G[set.frame]
+    if type(host) ~= "table" or not host.GetFrameLevel then return end
+    if not box then
+        local ok, made = pcall(MakeBox, host, false)
+        if not ok then report.frameError = tostring(made) return end
+        box = made
+        box.onFrame = true
+        frameBoxes[unit] = box
+    end
+    if not PlaceOnFrame(box, host) then box:Hide() return end
+    if box.flat and ns.SizeBoxEdge then ns.SizeBoxEdge(box) end
+    local mode, value, status, isTanking = "hide"
+    if Allowed(nil, unit) then mode, value, status, isTanking = ReadThreat(unit, nil, box) end
+    if mode == "hide" then
+        if ns.preview then ns.ShowValue(box, PREVIEW_VALUE, PREVIEW_STATUS, nil) else box:Hide() end
+        return
+    end
+    ns.ShowValue(box, value, status, isTanking)
+end
+
 local function UpdateAll()
     for unit in pairs(active) do Update(unit) end
+    for _, unit in ipairs(FRAME_ORDER) do UpdateFrameBox(unit) end
 end
 ns.UpdateAll = UpdateAll
 
 -- Called after any setting changes.
 function ns.Apply()
     for _, box in pairs(boxes) do box.layoutKey, box.chainKey = nil, nil end
+    for _, box in pairs(frameBoxes) do box.layoutKey = nil end
     UpdateAll()
     if ns.Options and ns.Options.RefreshPreview then ns.Options.RefreshPreview() end
 end
@@ -891,12 +1129,16 @@ local function LoadDB()
         if not ns.POSITION_LABELS[db[set.position]] then db[set.position] = DEFAULTS[set.position] end
     end
     if not ns.COLOR_LABELS[db.colors] then db.colors = DEFAULTS.colors end
+    if not ns.NUMBER_LABELS[db.frameNumber] then db.frameNumber = DEFAULTS.frameNumber end
+    if not ns.COLOR_LABELS[db.frameColors] then db.frameColors = DEFAULTS.frameColors end
+    if db.frameWarnAt < 50 or db.frameWarnAt > 100 then db.frameWarnAt = DEFAULTS.frameWarnAt end
     if db.scale < 0.5 or db.scale > 2 then db.scale = 1 end
     if db.warnAt < 50 or db.warnAt > 100 then db.warnAt = DEFAULTS.warnAt end
     if db.whoWidth < 40 or db.whoWidth > 140 then db.whoWidth = DEFAULTS.whoWidth end
     for _, set in pairs(ns.PIECES) do
         if db[set.scale] < ns.SCALE_MIN or db[set.scale] > ns.SCALE_MAX then db[set.scale] = 1 end
     end
+    if db.frameScale < ns.SCALE_MIN or db.frameScale > ns.SCALE_MAX then db.frameScale = DEFAULTS.frameScale end
     if db.style ~= "blizzard" and db.style ~= "dark" then db.style = "auto" end
     ns.db = db
 end
@@ -963,7 +1205,7 @@ local function Debug()
     Print("number: " .. db.number .. ", colors: " .. db.colors .. (Reversed() and " (reversed now)" or "")
         .. ", tank: " .. (IsTank() and "yes" or "no"))
     local on = {}
-    for _, key in ipairs({ "fill", "warn", "sound", "who", "pet", "groupOnly", "combatOnly", "targetOnly", "skipTrivial" }) do
+    for _, key in ipairs({ "fill", "warn", "sound", "who", "pet", "targetFrame", "focusFrame", "colorText", "colorBg", "groupOnly", "combatOnly", "targetOnly", "skipTrivial" }) do
         if db[key] then on[#on + 1] = key end
     end
     Print("on: " .. (#on > 0 and table.concat(on, ", ") or "none") .. ", pulse from " .. db.warnAt
@@ -983,7 +1225,21 @@ local function Debug()
     for k, v in pairs(report) do
         if type(k) == "string" and k:find("^skin error") then Print(k .. ": " .. tostring(v)) end
     end
-    Print("art: " .. atlasOK .. ", anchor error: " .. (report.anchorError or "none"))
+    -- What the game hands over for your target, asked by "target" and by its nameplate's unit.
+    local function Describe(unit)
+        local mode, value = ReadThreat(unit)
+        if mode ~= "plain" then return unit .. " " .. mode end
+        local okLead, lead = pcall(UnitThreatPercentageOfLead, "player", unit)
+        local leadText = (not okLead and "error") or (IsSecret(lead) and "secret") or tostring(lead)
+        return unit .. " plain " .. string.format("%.0f", value) .. " (lead " .. leadText .. ")"
+    end
+    local line = "your target: " .. Describe("target")
+    for unit, box in pairs(active) do
+        if IsPlateOf(box.plate, "target") then line = line .. ", " .. Describe(unit) end
+    end
+    Print(line)
+    Print("art: " .. atlasOK .. ", anchor error: " .. (report.anchorError or "none")
+        .. ", unit frames: " .. (report.frameError or ((frameBoxes.target and "target " or "") .. (frameBoxes.focus and "focus " or "") .. "ok")))
 end
 
 SLASH_THREATBOX1 = "/threatbox"
@@ -1008,6 +1264,10 @@ SlashCmdList["THREATBOX"] = function(msg)
         db[set.scale] = math.max(ns.SCALE_MIN, math.min(ns.SCALE_MAX, tonumber(rest) / 100))
         ns.Apply()
         Print(set.name .. " size " .. math.floor(db[set.scale] * 100 + 0.5) .. "%.")
+    elseif cmd == "framesize" and tonumber(rest) then
+        db.frameScale = math.max(ns.SCALE_MIN, math.min(ns.SCALE_MAX, tonumber(rest) / 100))
+        ns.Apply()
+        Print("Target and focus frame box size " .. math.floor(db.frameScale * 100 + 0.5) .. "%.")
     elseif cmd == "nudge" then
         local x, y = rest:match("^(-?%d+)%s+(-?%d+)$")
         if x then
@@ -1076,8 +1336,9 @@ SlashCmdList["THREATBOX"] = function(msg)
         Print("/threatbox (options), /threatbox below | above | right | left, /threatbox test, "
             .. "/threatbox pull | raw, /threatbox colors normal | tank | reversed, /threatbox size <50-200>, "
             .. "/threatbox nudge <across> <up>, /threatbox style auto | blizzard | dark, /threatbox reset, /threatbox debug")
-        Print("On or off: /threatbox fill, pulse, sound, who, pet, group, combat, targetonly, trivial. /threatbox pulseat <50-100>.")
+        Print("On or off: /threatbox border, text, background, fill, lead, pulse, sound, who, pet, group, combat, targetonly, trivial. /threatbox pulseat <50-100>.")
         Print("/threatbox detach pet | who [below | above | right | left] puts that piece on its own; /threatbox attach pet | who puts it back. /threatbox petsize | whosize <50-200>.")
+        Print("/threatbox targetframe and /threatbox focusframe put a threat box on those frames; /threatbox framesize <50-200>.")
     end
     if ns.Options and ns.Options.Refresh then ns.Options.Refresh() end
 end

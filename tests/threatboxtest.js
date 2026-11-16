@@ -90,6 +90,8 @@ function Frame:SetAlphaFromBoolean(v, a, b)
     if reveal(v) then self.alpha = a else self.alpha = b end
 end
 function Frame:SetTextColor(r, g, b) self.textColor = { r, g, b } end
+function Frame:GetTextColor() local c = self.textColor or { 1, 0.82, 0 } return c[1], c[2], c[3] end
+function Frame:SetClipsChildren(v) self.clips = v end
 function Frame:SetTexCoord(...) self.texCoord = { ... } end
 function Frame:SetTexture(t) self.texture = t self.atlas = nil end
 function Frame:SetColorTexture(r, g, b, a) self.colorTexture = { r, g, b, a } self.atlas = nil end
@@ -203,6 +205,20 @@ function T.plate(unit, opts)
     T.units[unit] = { attackable = opts.attackable ~= false, dead = false }
     T.fire("NAME_PLATE_UNIT_ADDED", unit)
     return plate
+end
+-- The game's target or focus frame, with the name strip its own threat number sits above.
+function T.unitFrame(name, bare)
+    local host = new("Button", UIParent)
+    host.level = 20
+    if not bare then
+        host.TargetFrameContent = new("Frame", host)
+        host.TargetFrameContent.TargetFrameContentMain = new("Frame", host.TargetFrameContent)
+        local strip = new("Texture", host.TargetFrameContent.TargetFrameContentMain)
+        strip.GetObjectType = function() return "Texture" end
+        host.TargetFrameContent.TargetFrameContentMain.ReputationColor = strip
+    end
+    _G[name] = host
+    return host
 end
 function T.box(unit)
     local plate = T.plates[unit]
@@ -420,7 +436,9 @@ scenario('size follows the level box and the options', `
   check(box.h == 18 and box.w == 36, "wider for the sign: " .. box.w)
   check(math.abs(box.scale - 0.8) < 1e-9, "matches the unit frame scale")
   check(box.level == 50 and box.steps[3].level == 54 and box.gate.level == 51, "frame levels")
-  check(box.fill.level == 56 and box.face.level == 57 and box.text.parent == box.face, "meter under the number")
+  check(box.fill.level == 59 and box.face.level == 60 and box.text.parent == box.face, "meter under the number")
+  check(box.tints[1].level == 56 and box.tints[3].level == 58, "background colors under the meter")
+  check(box.inks[1].level == 61 and box.inks[3].clip.level == 63, "colored numbers over the number")
   check(box.text.textHeight == 10, "font height")
   db.percentSign = false NS.Apply()
   check(box.w == 28, "level box width without the sign") check(box.text.text == "50", "no sign")
@@ -439,6 +457,296 @@ scenario('border option off', `
   for _, bar in ipairs(box.steps) do check(not bar.shown, "no color step") end
   db.colorBorder = true NS.Apply()
   check(box.border.shown and box.steps[2].shown, "border back")
+`);
+
+scenario('number and background in the threat color', `
+  T.plate("nameplate1")
+  T.threat.nameplate1 = { tanking = false, status = 2, scaled = 90, raw = 90, lead = 0 }
+  T.tick()
+  local box = T.box("nameplate1")
+  check(db.colorText == false and db.colorBg == false, "both off by default")
+  check(#box.tints == 3 and #box.inks == 3, "three steps each")
+  for state = 1, 3 do
+    check(not box.tints[state].shown and not box.inks[state].shown, "off: nothing drawn " .. state)
+  end
+  check(box.text.textColor == nil, "the number's own color untouched")
+
+  -- the background
+  SlashCmdList.THREATBOX("background")
+  check(db.colorBg == true, "slash word")
+  for state, bar in ipairs(box.tints) do
+    check(bar.shown and bar.min == state - 1 and bar.max == state and bar.value == 2, "state handed to tint " .. state)
+    check(bar.color[4] == 1, "solid, so the top one is the color seen")
+  end
+  check(math.abs(box.tints[2].color[1] - 0.6) < 1e-9 and math.abs(box.tints[2].color[2] - 0.36) < 1e-9, "a darker orange")
+  check(box.tints[3].color[2] == 0, "a darker red")
+  check(box.tintBase.parent == box.tints[1] and math.abs(box.tintBase.colorTexture[1] - 0.414) < 1e-9, "grey underneath")
+  check(box.tints[1].points[1].x == 2, "inside the level box art")
+
+  -- the number
+  SlashCmdList.THREATBOX("text")
+  check(db.colorText == true, "slash word")
+  check(box.text.textColor[1] == 0.69, "the number takes the lowest color")
+  for state, bar in ipairs(box.inks) do
+    check(bar.shown and bar.min == state - 1 and bar.max == state and bar.value == 2, "state handed to copy " .. state)
+    check(bar.text.text == "90%" and bar.text.parent == bar.clip, "same number, inside the clip")
+    check(bar.clip.clips == true, "clipped")
+    check(bar.clip.points[2].rel == bar.fill and bar.clip.points[2].relPoint == "BOTTOMRIGHT", "ends where the fill ends")
+    check(bar.clip.points[1].rel == bar and bar.clip.points[1].x == -1, "starts left of the bar")
+    check(bar.text.points[1].rel == box and bar.text.points[1].point == "CENTER", "over the number")
+    check(bar.text.textHeight == 10, "font height")
+    check(bar.fill.colorTexture[4] == 0, "unseen fill")
+  end
+  check(box.inks[1].text.textColor[3] < 0.6 and box.inks[2].text.textColor[2] == 0.6 and box.inks[3].text.textColor[2] == 0, "yellow, orange, red")
+  db.percentSign = false NS.Apply()
+  check(box.inks[3].text.text == "90", "copies follow the sign setting")
+
+  -- reversed for tanks
+  SlashCmdList.THREATBOX("colors reversed")
+  check(box.text.textColor[1] == 1 and box.text.textColor[2] == 0, "lowest is red for a tank")
+  check(box.inks[3].text.textColor[1] == 0.2 and box.inks[3].text.textColor[2] == 0.9, "holding it is green")
+  check(math.abs(box.tints[3].color[2] - 0.54) < 1e-9 and box.tintBase.colorTexture[2] == 0, "background reversed too")
+  SlashCmdList.THREATBOX("colors normal")
+  check(box.inks[3].text.textColor[2] == 0 and box.tints[3].color[2] == 0, "and back")
+
+  -- secret values go straight through
+  T.threat.nameplate1 = { secret = true, tanking = true, status = 3, scaled = 100, raw = 100, lead = 0 }
+  T.tick()
+  for state = 1, 3 do
+    check(issecretvalue(box.tints[state].value) and issecretvalue(box.inks[state].value), "secret state passed on " .. state)
+    check(box.inks[state].text.secretText, "secret number written by the game " .. state)
+    check(box.tints[state].shown and box.inks[state].shown, "shown " .. state)
+  end
+
+  -- off again: the number's own color comes back
+  db.colorText = false db.colorBg = false NS.Apply()
+  for state = 1, 3 do check(not box.tints[state].shown and not box.inks[state].shown, "hidden " .. state) end
+  check(box.text.textColor[1] == 1 and box.text.textColor[2] == 0.82 and box.text.textColor[3] == 0, "plain color restored")
+`);
+
+scenario('threat colors on the pet box, the sample and in the dark look', `
+  T.plate("nameplate1")
+  T.threat.nameplate1 = { tanking = false, status = 1, scaled = 50, raw = 50, lead = 0 }
+  T.petThreat.nameplate1 = { tanking = false, status = 3, scaled = 70, raw = 70, lead = 0 }
+  T.hasPet = true
+  db.pet, db.colorText, db.colorBg = true, true, true NS.Apply()
+  local box = T.box("nameplate1")
+  local pet = box.pet
+  check(pet and pet.shown, "pet box shown")
+  check(pet.tints[3].shown and pet.tints[3].value == 3, "the pet box's background follows the pet's threat")
+  check(not pet.inks[1].shown and pet.text.textColor[1] == 0.6, "the pet's number stays blue")
+  check(pet.tints[2].level > pet.level and pet.inks[1].text.textHeight == 10, "levels and font on the pet box")
+  -- the options sample
+  SlashCmdList.THREATBOX("")
+  local P = NS.Options.preview
+  check(P.box.tints[2].shown and P.box.inks[2].shown and P.box.inks[2].text.text == "87%", "preview shows both")
+  local ui = NS.Options.ui
+  check(ui.colorText and ui.colorBg and ui.colorBorder, "three color checks")
+  ui.colorBg.checked = false ui.colorBg.scripts.OnClick(ui.colorBg)
+  check(db.colorBg == false and not box.tints[1].shown, "check turns it off")
+  ui.colorBg.checked = true ui.colorBg.scripts.OnClick(ui.colorBg)
+  -- dark look
+  SlashCmdList.THREATBOX("style dark")
+  check(box.flat and #box.tints[1].points == 0, "background covers the flat panel")
+  check(box.tints[1].level > box.panel.level and box.tints[3].level < box.fill.level, "over the panel, under the meter")
+  check(box.tints[1].shown and box.inks[1].shown and box.text.textColor[1] == 0.69, "colors kept through the change")
+  db.colorText = false NS.Apply()
+  check(box.text.textColor[2] == 0.82, "plain color still known")
+  NS.Reset()
+  check(db.colorText == false and db.colorBg == false and db.colorBorder == true, "reset")
+`);
+
+scenario('threat box on the target frame and the focus frame', `
+  local tf, ff = T.unitFrame("TargetFrame"), T.unitFrame("FocusFrame")
+  T.units.target = { attackable = true, dead = false }
+  T.threat.target = { tanking = false, status = 2, scaled = 76.4, raw = 90, lead = 0 }
+  T.tick()
+  check(db.targetFrame == false and db.focusFrame == false, "off by default")
+  check(not NS.frameBoxes.target and not NS.frameBoxes.focus, "nothing made while off")
+
+  SlashCmdList.THREATBOX("targetframe")
+  local box = NS.frameBoxes.target
+  check(db.targetFrame == true and box and box.parent == tf, "a child of the target frame")
+  check(not NS.frameBoxes.focus, "focus still off")
+  check(box.shown and box.text.text == "76%", "your threat on the target: " .. tostring(box.text.text))
+  check(box.steps[2].value == 2 and box.steps[2].shown, "threat color")
+  local p = box.points[1]
+  local strip = tf.TargetFrameContent.TargetFrameContentMain.ReputationColor
+  check(#box.points == 1 and p.point == "BOTTOM" and p.rel == strip and p.relPoint == "TOP" and p.x == 80 and p.y == 4, "above the name strip, over the portrait")
+  check(box.scale == 1.2 and box.w == 36 and box.h == 18 and box.text.textHeight == 10, "size")
+  check(box.level == 30 and box.face.level == 40, "above the frame's own layers")
+  check(tf.calls.SetAttribute == nil and rawget(tf, "threatBox") == nil, "nothing written on the game's frame")
+
+  -- settings reach it
+  db.frameX, db.frameY = 12, -6 NS.Apply() p = box.points[1]
+  check(p.x == 12 and p.y == -2 and #box.points == 1, "nudge")
+  SlashCmdList.THREATBOX("framesize 150") check(db.frameScale == 1.5 and box.scale == 1.5, "size word")
+  SlashCmdList.THREATBOX("framesize 900") check(db.frameScale == 2, "size capped")
+  -- its own copy of the threat box's settings: the nameplate ones leave it alone
+  db.percentSign = false db.colorBg = true db.colorBorder = false db.fill = false db.number = "raw" db.colors = "reversed" db.warn = false NS.Apply()
+  check(box.w == 36 and box.text.text == "76%" and not box.tints[2].shown and box.steps[2].shown and box.fill.shown, "nameplate settings do not reach it")
+  check(box.steps[3].color[2] == 0 and box.pulse.shown and box.gate.max == 80, "nor the colors and the pulse")
+  NS.Reset()
+  db.targetFrame = true
+  db.framePercentSign = false NS.Apply() check(box.w == 28 and box.text.text == "76", "no sign")
+  db.frameColorBg = true NS.Apply() check(box.tints[2].shown and box.tints[2].value == 2, "background color")
+  db.frameColorText = true NS.Apply() check(box.inks[2].shown and box.inks[2].text.text == "76", "number color")
+  db.frameColorBorder = false NS.Apply() check(not box.steps[2].shown and not box.border.shown, "border off")
+  db.frameFill = false NS.Apply() check(not box.fill.shown, "fill off")
+  db.frameNumber = "raw" NS.Apply() check(box.text.text == "90", "raw number")
+  db.frameColors = "reversed" NS.Apply() check(box.inks[3].text.textColor[1] == 0.2, "reversed colors")
+  db.frameWarnAt = 60 NS.Apply() check(box.gate.min == 0 and box.gate.max == 1, "reversed: pulses while not on you")
+  db.frameColors = "normal" NS.Apply() check(box.gate.max == 60 and box.pulse.shown, "its own pulse threshold")
+  db.frameWarn = false NS.Apply() check(not box.pulse.shown, "pulse off")
+  -- and none of that reached a nameplate
+  T.plate("nameplate1")
+  T.threat.nameplate1 = { tanking = false, status = 2, scaled = 76.4, raw = 90, lead = 0 }
+  T.tick()
+  local np = T.box("nameplate1")
+  check(np.text.text == "76%" and np.steps[2].shown and np.fill.shown and not np.inks[2].shown and np.gate.max == 80, "nameplate box unchanged")
+  db.frameNumber = "pull" db.frameColorText = false db.frameColorBg = true db.frameFill = true db.frameWarn = true db.frameWarnAt = 80 db.frameColorBorder = true NS.Apply()
+
+  -- no target, a friendly target, a dead one
+  T.threat.target = nil T.tick() check(not box.shown, "no threat: hidden")
+  T.threat.target = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 140 }
+  T.tick() check(box.shown and box.text.text == "140", "back, with the lead while it is on you")
+  T.units.target.attackable = false T.tick() check(not box.shown, "friendly target: hidden")
+  T.units.target.attackable = true T.units.target = nil T.tick() check(not box.shown, "no target: hidden")
+  T.units.target = { attackable = true, dead = false }
+
+  -- secret values
+  T.threat.target = { secret = true, tanking = false, status = 1, scaled = 55, raw = 60, lead = 0 }
+  T.tick()
+  check(box.shown and box.text.secretText and issecretvalue(box.steps[1].value), "secret threat handed to the game")
+
+  -- show rules: the group and combat rules count, the target-only rule does not
+  db.targetOnly = true NS.Apply() check(box.shown, "target-only rule does not hide it")
+  db.targetOnly = false db.groupOnly = true NS.Apply() check(not box.shown, "group rule hides it")
+  T.grouped = true T.tick() check(box.shown, "in a group")
+  db.groupOnly = false T.grouped = false
+
+  -- the focus frame
+  T.units.focus = { attackable = true, dead = false }
+  T.threat.focus = { tanking = false, status = 1, scaled = 20, raw = 25, lead = 0 }
+  SlashCmdList.THREATBOX("focusframe")
+  local fbox = NS.frameBoxes.focus
+  check(fbox and fbox.parent == ff and fbox.shown and fbox.text.text == "20", "focus frame box")
+  check(fbox ~= box and fbox.points[1].rel == ff.TargetFrameContent.TargetFrameContentMain.ReputationColor, "on its own strip")
+
+  -- the sample
+  T.threat.focus = nil T.tick() check(not fbox.shown, "hidden")
+  SlashCmdList.THREATBOX("test") check(fbox.shown and fbox.text.text == "87", "sample on the frame")
+  SlashCmdList.THREATBOX("test") check(not fbox.shown, "sample off")
+
+  -- off again
+  SlashCmdList.THREATBOX("targetframe") check(db.targetFrame == false and not box.shown, "off hides it")
+  NS.Reset() check(db.focusFrame == false and db.frameScale == 1.2 and db.frameX == 80 and not fbox.shown, "reset")
+`);
+
+scenario('unit frames: missing frame, missing strip, dark look, options tab', `
+  db.targetFrame, db.focusFrame = true, true
+  T.units.target = { attackable = true, dead = false }
+  T.threat.target = { tanking = false, status = 1, scaled = 50, raw = 50, lead = 0 }
+  T.tick()
+  check(not NS.frameBoxes.target, "no target frame in the game: nothing happens")
+  local tf = T.unitFrame("TargetFrame", true)
+  T.tick()
+  local box = NS.frameBoxes.target
+  local p = box and box.points[1]
+  check(box and box.shown and p.rel == tf and p.point == "BOTTOM" and p.relPoint == "TOP", "no strip: the frame's own top")
+  SlashCmdList.THREATBOX("style dark")
+  check(box.flat and box.panel and box.shown, "flat in the dark look")
+  -- the options tab
+  SlashCmdList.THREATBOX("")
+  local O = NS.Options
+  local ui, tabs, blocks = O.ui, O.tabs, O.blocks
+  check(tabs.frames and tabs.frames.text == "Unit frames" and tabs.who.points[1].x < tabs.frames.points[1].x, "fourth tab")
+  tabs.frames.scripts.OnClick(tabs.frames)
+  check(O.Editing() == "frames" and blocks.frames.shown and not blocks.threat.shown, "its block shows")
+  for _, key in ipairs({ "targetFrame", "focusFrame", "frameScale", "frameX", "frameY", "frameWarn", "frameWarnAt", "frameNumber",
+      "framePercentSign", "frameFill", "frameColorBorder", "frameColorText", "frameColorBg", "frameColors" }) do
+    local owner = ui[key] and ui[key].parent
+    if owner ~= blocks.frames then owner = owner and owner.parent end
+    check(owner == blocks.frames, key .. " on the unit frames tab")
+  end
+  ui.targetFrame.checked = false ui.targetFrame.scripts.OnClick(ui.targetFrame)
+  check(db.targetFrame == false and not box.shown, "check turns it off")
+  ui.targetFrame.checked = true ui.targetFrame.scripts.OnClick(ui.targetFrame) check(box.shown, "and on")
+  ui.frameScale.scripts.OnValueChanged(ui.frameScale, 80) check(db.frameScale == 0.8 and box.scale == 0.8, "size slider")
+  ui.frameY.scripts.OnValueChanged(ui.frameY, 9) check(db.frameY == 9 and box.points[1].y == 9 - 20, "nudge slider")
+  ui.frameColorText.checked = true ui.frameColorText.scripts.OnClick(ui.frameColorText)
+  check(db.frameColorText == true and db.colorText == false and box.inks[1].shown, "its own number color check")
+  ui.frameNumber.scripts.OnClick(ui.frameNumber, "LeftButton") check(db.frameNumber == "raw" and db.number == "pull", "its own number cycle")
+  ui.frameColors.scripts.OnClick(ui.frameColors, "LeftButton") check(db.frameColors == "tank" and db.colors == "normal", "its own colors cycle")
+  ui.frameWarnAt.scripts.OnValueChanged(ui.frameWarnAt, 95) check(db.frameWarnAt == 95 and db.warnAt == 80, "its own pulse slider")
+  check(ui.frameX.max == 300 and ui.frameY.min == -300 and ui.offsetX.max == 150 and ui.petY.min == -150, "nudge ranges")
+`);
+
+scenario('saved unit frame settings out of range are repaired', `
+  check(db.frameScale == 1.2 and db.targetFrame == true, "repaired, the switch kept")
+  check(db.frameNumber == "pull" and db.frameColors == "normal" and db.frameWarnAt == 80 and db.frameFill == true, "its own settings repaired")
+`, `ThreatBoxDB = { frameScale = 7, targetFrame = true, frameNumber = "x", frameColors = "y", frameWarnAt = 5, frameFill = "no" }`);
+
+scenario('the nameplate of your target or focus is read as target or focus', `
+  T.plate("nameplate1") T.plate("nameplate2") T.plate("nameplate3")
+  -- by its own unit the game holds the lead back; by "target" it gives it
+  T.threat.nameplate1 = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 0 }
+  T.threat.nameplate2 = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 0 }
+  T.threat.nameplate3 = { secret = true, tanking = true, status = 3, scaled = 100, raw = 100, lead = 0 }
+  T.units.target = { attackable = true, dead = false }
+  T.threat.target = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 262 }
+  T.targetUnit = "nameplate1"
+  T.tick()
+  local b1, b2, b3 = T.box("nameplate1"), T.box("nameplate2"), T.box("nameplate3")
+  check(b1.text.text == "262%", "target's nameplate shows the lead: " .. tostring(b1.text.text))
+  check(b2.text.text == "100%", "another nameplate reads by its own unit")
+  -- the focus too, and a hidden nameplate value gives way to a readable one
+  T.units.focus = { attackable = true, dead = false }
+  T.threat.focus = { tanking = false, status = 1, scaled = 44, raw = 50, lead = 0 }
+  T.focusUnit = "nameplate3"
+  T.tick()
+  check(b3.text.text == "44%" and not b3.text.secretText, "focus's nameplate read as focus")
+  -- changing target moves it
+  T.targetUnit = "nameplate2" T.fire("PLAYER_TARGET_CHANGED")
+  check(b2.text.text == "262%" and b1.text.text == "100%", "follows the target")
+  -- nothing to read by "target": the nameplate's own unit still answers
+  T.threat.target = nil T.tick()
+  check(b2.shown and b2.text.text == "100%", "falls back to the nameplate's unit")
+  -- the debug readout names both
+  local n = #T.printed
+  T.threat.target = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 262 }
+  SlashCmdList.THREATBOX("debug")
+  local found
+  for i = n + 1, #T.printed do
+    if T.printed[i]:find("your target: target plain 262 %(lead 262%), nameplate2 plain 100 %(lead 0%)") then found = true end
+  end
+  check(found, "debug compares the two")
+`);
+
+scenario('lead above 100% can be switched off, per kind of box', `
+  local tf = T.unitFrame("TargetFrame")
+  T.plate("nameplate1")
+  T.threat.nameplate1 = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 180 }
+  T.units.target = { attackable = true, dead = false }
+  T.threat.target = { tanking = true, status = 3, scaled = 100, raw = 100, lead = 180 }
+  db.targetFrame = true NS.Apply()
+  local np, fb = T.box("nameplate1"), NS.frameBoxes.target
+  check(db.lead == true and db.frameLead == true, "on by default")
+  check(np.text.text == "180%" and fb.text.text == "180%", "lead on both")
+  SlashCmdList.THREATBOX("lead")
+  check(db.lead == false and np.text.text == "100%", "nameplate stops at 100%")
+  check(fb.text.text == "180%", "the frame box keeps its own setting")
+  check(np.steps[3].value == 3, "still red")
+  db.frameLead = false NS.Apply() check(fb.text.text == "100%", "frame box stops at 100% too")
+  db.lead = true NS.Apply() check(np.text.text == "180%" and fb.text.text == "100%", "and back, separately")
+  -- a tank holding the enemy with the lead off keeps the red state, not the lost-it orange
+  T.setTank(true) T.tick() db.lead = false NS.Apply()
+  check(np.steps[3].value == 3 and np.text.text == "100%", "tank holding it: red")
+  -- the options
+  SlashCmdList.THREATBOX("")
+  local ui, blocks = NS.Options.ui, NS.Options.blocks
+  check(ui.lead and ui.lead.parent == blocks.threat and ui.frameLead and ui.frameLead.parent == blocks.frames, "a check on each tab")
+  ui.frameLead.checked = true ui.frameLead.scripts.OnClick(ui.frameLead) check(db.frameLead == true and fb.text.text == "180%", "its check")
 `);
 
 scenario('plates come and go', `
@@ -507,7 +815,7 @@ scenario('slash commands', `
   local n = #T.printed
   SlashCmdList.THREATBOX("debug") check(#T.printed > n, "debug prints")
   n = #T.printed
-  SlashCmdList.THREATBOX("nonsense") check(#T.printed == n + 3, "help lines")
+  SlashCmdList.THREATBOX("nonsense") check(#T.printed == n + 4, "help lines")
 `);
 
 scenario('melee and ranged takeover: the game scales it, raw shows the difference', `
@@ -682,7 +990,7 @@ scenario('options preview: drag, drop areas, wheel, click', `
   T.cursor = { 510, 294 } P.DragUpdate()
   check(db.offsetX == 10 and db.offsetY == -6, "nudged " .. db.offsetX .. "/" .. db.offsetY)
   check(real.points[1].x == 10, "real nameplate follows live")
-  T.cursor = { 9999, 300 } P.DragUpdate() check(db.offsetX == 60, "clamped")
+  T.cursor = { 9999, 300 } P.DragUpdate() check(db.offsetX == 150, "clamped")
   T.cursor = { 510, 294 }
   P.box.scripts.OnDragStop(P.box)
   check(not P.Dragging() and not P.zoneLayer.shown, "areas hide")

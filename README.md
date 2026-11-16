@@ -10,6 +10,8 @@ Made for World of Warcraft: Forever and the default Blizzard nameplates.
 - **Until you pull (default).** 100% is the point you take the enemy. The game works this out for where you stand, so it is right in melee range (where it takes 110% of the tank's threat) and from farther away (130%).
 - **Raw threat (optional).** The same number as `/console threatShowNumeric 1` shows on the target frame.
 - **Border color by threat.** Grey on the list, yellow catching up, orange about to change hands, red on you.
+- **Number and background color by threat (optional).** The number, the box's background, or both can take the same colors, so a glance is enough.
+- **On the target and focus frames (optional).** The same box above the portrait on the game's target frame and focus frame.
 - **Reversed colors for tanks.** Green while the enemy is safely on you, red when you have lost it. Always, or only while your role is tank.
 
 ## More at a glance
@@ -53,11 +55,14 @@ With EllesmereUI's Nameplates module on, the box follows its nameplates and its 
 | `/threatbox` | Opens the options |
 | `/threatbox below`, `above`, `right`, `left` | Pins the box |
 | `/threatbox pull`, `/threatbox raw` | Which number to show |
-| `/threatbox colors normal`, `tank`, `reversed` | Border colors |
+| `/threatbox colors normal`, `tank`, `reversed` | Threat colors, normal or reversed |
 | `/threatbox size 120` | Threat box size in percent (50 to 200) |
 | `/threatbox petsize 120`, `/threatbox whosize 120` | Pet box and target box size |
 | `/threatbox nudge 0 -4` | Nudge across and up |
 | `/threatbox style auto`, `blizzard`, `dark` | Window style |
+| `/threatbox border`, `text`, `background` | Colors the border, the number or the background by threat |
+| `/threatbox targetframe`, `focusframe` | A threat box on the target frame or the focus frame |
+| `/threatbox framesize 120` | Their size in percent (50 to 200) |
 | `/threatbox fill`, `pulse`, `sound`, `who`, `pet` | Turns each extra on or off |
 | `/threatbox pulseat 80` | The threat the pulse starts at (50 to 100) |
 | `/threatbox group`, `combat`, `targetonly`, `trivial` | Show rules, on or off |

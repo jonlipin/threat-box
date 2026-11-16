@@ -94,10 +94,21 @@ function ns.SkinBox(box)
         box.fill:ClearAllPoints()
         box.fill:SetAllPoints(box)
         box.fill:SetStatusBarColor(r or 1, g or 0.6, b or 0.2, 0.4)
+        -- The background colors cover the whole flat panel, inside the edge.
+        for _, tint in ipairs(box.tints) do
+            tint:ClearAllPoints()
+            tint:SetAllPoints(box)
+        end
 
         box.colors = nil     -- the colors are painted again on the new fills
         box.layoutKey = nil  -- and the box is placed again, with the panel's frame level
         ns.SizeBoxEdge(box)
+        -- The style's font may bring its own color: the number goes back to its plain color
+        -- first, and its threat colors are painted again on the next update.
+        local plain = box.inkColors and box.plainColor
+        if plain then box.text:SetTextColor(plain[1], plain[2], plain[3]) end
+        box.inkColors, box.plainColor = nil, nil
+        for _, ink in ipairs(box.inks) do S().Font(ink.text) end
         S().Font(box.text)
     end)
 end
